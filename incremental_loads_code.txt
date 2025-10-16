@@ -1,0 +1,66 @@
+%sql
+drop table if exists customer_table;
+
+--------------------------------------------------------------------------
+%sql
+create table customer_table
+(customerID int primary key,
+name varchar(250),
+email varchar(250),
+state varchar(250),
+age float
+)using delta
+TBLPROPERTIES ('delta.enablechangeDataFeed' =True);
+
+---------------------------------------------------------------------------
+customer_schema='customerID int,name string,email string,state string,age float'
+read_df=spark.read.format('csv').option('header', 'true').schema(customer_schema).load('abfss://files@sourceaccountsa121.dfs.core.windows.net/catalog/source/customer_files.csv')
+read_df.createOrReplaceTempView('customer_v')
+
+
+-----------------------------------------------------------------------------
+%sql
+merge into customer_table t
+using customer_v s
+on t.customerID=s.customerID
+when matched then
+update set t.name=s.name,t.email=s.email,t.state=s.state,t.age=s.age
+when not matched then
+insert *
+
+------------------------------------------------------------------------------
+%sql
+select * from table_changes('customer_table',1)
+
+--------------------------------------------------------------------------
+
+from delta.tables import DeltaTable
+from pyspark.sql.functions import *
+# Load your Delta table
+delta_table = DeltaTable.forName(spark, "customer_table")
+history_df=delta_table.history()
+max_version=history_df.select(max('version')).collect()[0][0]
+display(max_version)
+
+------------------------------------------------------------------------------
+
+stream_df = (
+    spark.readStream
+    .format("delta")
+    .option("readChangeFeed", "true")
+    .option("startingVersion", max_version)
+    .table("customer_table")
+)
+
+query = (
+    stream_df.writeStream
+    .format("delta")
+    .trigger(availableNow=True)
+    .option("checkpointLocation", "abfss://files@sourceaccountsa121.dfs.core.windows.net/catalog/checkpoint/")
+    .start("abfss://files@sourceaccountsa121.dfs.core.windows.net/catalog/target/")
+
+---------------------------------------------------------------------------------------------
+
+read_df1=spark.read.format('delta').load('abfss://files@sourceaccountsa121.dfs.core.windows.net/catalog/target/')
+display(read_df1)
+)
